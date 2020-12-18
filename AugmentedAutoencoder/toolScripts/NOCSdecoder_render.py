@@ -14,7 +14,6 @@ import argparse
 import cv2          # using cv2 for png load and save might cause a problem of incompatible libpng versions.
 import bpy
 import queue
-import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--obj_folder', help='The path to the obj model folder', required=True)
@@ -23,9 +22,6 @@ parser.add_argument('--output_folder', help='The path to the output images', req
 parser.add_argument('--debug_output_interval', help='Output images every X images', default='50')
 parser.add_argument('--debug', help='debug mode, only a few samples will be executed', action='store_true')
 parser.add_argument('--remove_material', help='Remove object materials when rendering', action='store_true')
-parser.add_argument('--range', help='The range to process', default=None)
-parser.add_argument('--save_interval', help='Save a temporary file for every X samples', default='100000000')
-parser.add_argument('--refresh_rate', help='Refresh the scene, release memory every X samples', default='500')
 
 args, _ = parser.parse_known_args()
 
@@ -38,8 +34,6 @@ output_folder = args.output_folder
 remove_material = args.remove_material
 output_interval = int(args.debug_output_interval)
 debug = args.debug
-save_interval = int(args.save_interval)
-refresh_rate = int(args.refresh_rate)
 
 cropped_size = (128,128)
 global_obj_scale = 1.0
@@ -48,7 +42,8 @@ far_plane = 100
 
 def load_obj(obj_path, rot, scale = np.array([global_obj_scale] * 3, dtype=np.float32)):
     # if the list is too long, remove some, obj_buf is FIFO
-    if len(obj_buf) >= 50:
+    print ("len and keys {}, {}".format(len(obj_buf), obj_buf.keys()))
+    if len(obj_buf) >= 20:
         # remove 5
         #for i in range(5):     don't know why this method will cause segfault when render.
         #    key = obj_key_queue.get()
@@ -57,7 +52,6 @@ def load_obj(obj_path, rot, scale = np.array([global_obj_scale] * 3, dtype=np.fl
         #        obj.select = True
         #        bpy.ops.object.delete(use_global=False)
         #    del obj_buf[key]
-        print ("len and keys {}, {}".format(len(obj_buf), obj_buf.keys()))
         empty_obj_buf()
     # find if it's not cached, load it
     if obj_path not in obj_buf:
@@ -65,7 +59,7 @@ def load_obj(obj_path, rot, scale = np.array([global_obj_scale] * 3, dtype=np.fl
         bpy.ops.import_scene.obj(filepath=os.path.join(obj_folder, obj_path, 'model.obj'))
         obs = bpy.context.selected_editable_objects[:]
         obj_buf[obj_path] = obs
-        #obj_key_queue.put(obj_path)
+        obj_key_queue.put(obj_path)
 
     obs = obj_buf[obj_path]
     for obj in obs:
@@ -82,26 +76,13 @@ def load_obj(obj_path, rot, scale = np.array([global_obj_scale] * 3, dtype=np.fl
     
 
 def empty_obj_buf():
-    # deselect
-    bpy.ops.object.select_all(action='DESELECT')
-
     for obs in obj_buf.values():
         for obj in obs:
             obj.select = True
-    bpy.ops.object.delete()
+            bpy.ops.object.delete(use_global=False)
     obj_buf.clear()
-    #while not obj_key_queue.empty():
-    #    obj_key_queue.get()
-
-    # also, remove materials and textures
-    for mat in bpy.data.materials:
-        bpy.data.materials.remove(mat, do_unlink=True)
-    assert (len(bpy.data.materials)) == 0
-
-    # textures
-    for tex in bpy.data.textures:
-        bpy.data.textures.remove(tex, do_unlink=True)
-    assert (len(bpy.data.textures)) == 0
+    while not obj_key_queue.empty():
+        obj_key_queue.get()
 
 def get_canonical_config(is_shapenet):
     dict={}
@@ -139,9 +120,7 @@ def set_camera(cam_K,render_dim,scene,cam,clip_start,clip_end):
     cam.rotation_mode = 'QUATERNION'
 
 def initialize_scene():
-    # reload initial scene
-    bpy.ops.wm.read_homefile()
-    # print ("ini:{}".format(bpy.context.scene.objects.keys()))
+    print ("ini:{}".format(bpy.context.scene.objects.keys()))
     # initialize the scene, camera and lights
     # remove cube
     if 'Cube' in bpy.data.objects:
@@ -202,7 +181,7 @@ def initialize_scene():
     light_specular.location=cur_lamp_loc
 
     scene = bpy.context.scene
-    # print (scene.objects.keys())
+    print (scene.objects.keys())
     cam = scene.objects['Camera']
     clip_start,clip_end=near_plane, far_plane
 
@@ -277,33 +256,22 @@ def float_2_uint8(img):
     
 def main():
     print ("Start to process data with configuration:\ndata path:{}\nobj path:{}\noutput path:{}\n \
-            cropped_size:{}\nsave interval:{}\ndebug mode:{}".format(data_path, \
-        obj_folder, output_folder, cropped_size, save_interval, debug))
+            cropped_size:{}\ndebug mode:{}".format(data_path, \
+        obj_folder, output_folder, cropped_size, debug))
 
+    _, depth_file_output = initialize_scene()
     # find all npz file
-    if os.path.isdir(data_path):
-        npz_files = glob.glob(os.path.join(data_path, './*.npz')) # ./ is used for Windows
-    elif data_path[-4:] == '.npz':
-        npz_files = [data_path]
-    else:
-        print ("Data path should be a folder which contains npz files or a single npz file.")
-        exit()
+    npz_files = glob.glob(os.path.join(data_path, './*.npz')) # ./ is used for Windows
     print (npz_files)
 
-    prange = None if args.range is None else eval(args.range)
-
-    # output folder, make sure it exists
-    image_output_folder = os.path.join(output_folder, 'img')
-    if not os.path.exists(image_output_folder):
-        os.makedirs(image_output_folder, exist_ok=True)
+    scene = bpy.context.scene
 
     for npz_file in npz_files:
         # load it
         print (npz_file)
-        empty_obj_buf()
-        _, depth_file_output = initialize_scene()
-        scene = bpy.context.scene
         with np.load(npz_file) as data:
+            empty_obj_buf()
+            # empty obj_buf
             if 'obj_list' not in data or 'matrix_rot_y' not in data:
                 print ("[Error]npz file {} doesn't have key 'obj_file' or 'matrix_rot_y'".format(npz_file))
                 continue
@@ -314,12 +282,8 @@ def main():
             if rot_matrices.shape[0] != obj_list.shape[0]:
                 print ("[Error]npz file {} has different sample number of 'matrix_rot_y' and 'obj_list'".format(npz_file))
                 continue
-            if isinstance(prange, tuple) and prange[1] > rot_matrices.shape[0]:
-                prange = (prange[0], rot_matrices.shape[0])
-            if isinstance(prange, tuple):
-                num_sample = prange[1] - prange[0]
-            else:
-                num_sample = rot_matrices.shape[0] if not debug else 1000
+            
+            num_sample = rot_matrices.shape[0] if not debug else 2000
             output_data = {'scene_id':data['scene_id'], 'image_id':data['image_id'], 'class_id':data['class_id'], 'bbox':data['bbox'], \
                             'matrix_rot_y':rot_matrices, 'matrix_tra_y':data['matrix_tra_y'], 'obj_list':obj_list, \
                             'bgr_y_render':np.zeros((num_sample, cropped_size[0], cropped_size[1], 3), dtype=np.uint8), \
@@ -330,16 +294,13 @@ def main():
             npz_name = os.path.basename(npz_file)
             npz_name = npz_name[:-4]
 
-            start_i, end_i = prange if isinstance(prange, tuple) else (0, num_sample)
-            print ("Process start from {} to {}, sample number:{}".format(start_i, end_i, num_sample))
-            time.sleep(3.0)      # give some time to see configuration report
-            for i in range(start_i, end_i, 1):
+            for i in range(num_sample):
                 # print ("Processing:{}/{}".format(i, num_sample), end='\r')
                 load_obj(obj_list[i], rot_matrices[i])
                 # print ("Finish loading obj")
                 # render, I hope I can avoid this IO but directly access the pixel values.
                 # Unfortunately, seems there's not such a method.
-                render_img_path = os.path.join(image_output_folder, '{}_{}_NOCS'.format(npz_name, i))
+                render_img_path = os.path.join(output_folder, '{}_{}_NOCS'.format(npz_name, i))
                 scene.render.image_settings.file_format = 'PNG'
                 scene.render.filepath = render_img_path
                 depth_file_output.base_path=''
@@ -377,11 +338,10 @@ def main():
 
                 # save
                 #print ("Save to output data\n")
-                index_offset = i - start_i
-                output_data['bgr_y_render'][index_offset] = m1_cropped_img[...,::-1]
-                output_data['bgr_y_render_aae'][index_offset] = m2_cropped_img[...,::-1]
-                output_data['depth_y'][index_offset] = m1_cropped_depth
-                output_data['mask_y'][index_offset] = m1_cropped_mask.astype(np.bool)
+                output_data['bgr_y_render'][i] = m1_cropped_img
+                output_data['bgr_y_render_aae'][i] = m2_cropped_img
+                output_data['depth_y'][i] = m1_cropped_depth
+                output_data['mask_y'][i] = m1_cropped_mask.astype(np.bool)
 
                 # if it's output interval, save it, the output depth is only for preview because cv2 cannot export float16
                 if i % output_interval == 0:
@@ -393,39 +353,10 @@ def main():
                     # else, delete rendered result
                     os.remove(render_img_path + '.png')
                     os.remove(render_img_path + '_depth0001.exr')
-                
-                # if it reaches the same interval
-                sample_number = index_offset + 1
-                if sample_number % save_interval == 0:
-                    # save 
-                    save_from = sample_number - save_interval
-                    save_to = sample_number
-
-                    # interval data
-                    interval_data = {}
-                    for key, value in output_data.items():
-                        interval_data[key] = value[save_from:save_to]
-                    save_path = os.path.basename(npz_file)[:-4] + '_({}_{})_decoder.npz'.format(i-save_interval+1,i)
-                    save_path = os.path.join(output_folder, save_path)
-                    print ("saving interval results to {}".format(save_path))
-                    np.savez_compressed(save_path, **interval_data)
-                    print ("saved interval results to {}".format(save_path))                
-                
-                if sample_number % refresh_rate == 0:
-                    # refresh the scene
-                    print ("Refresh the scene")
-                    empty_obj_buf()
-                    _, depth_file_output = initialize_scene()
-                    scene = bpy.context.scene
-                    time.sleep(1.0)
             
-            if isinstance(prange, tuple):
-                save_path = os.path.basename(npz_file)[:-4] + '_({}_{})_decoder.npz'.format(prange[0], prange[1])
-            else:
-                save_path = os.path.basename(npz_file)[:-4] + '_decoder.npz'
-            save_path = os.path.join(output_folder, save_path)
+            save_path = os.path.splitext(npz_file)[0] + '_decoder.npz'
             print ("saving results to {}".format(save_path))
-            np.savez_compressed(save_path, **output_data)
+            #np.savez_compressed(save_path, **output_data)
             print ("saved results to {}".format(save_path))
 
             if debug:
