@@ -13,7 +13,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--path', help='Path to the dataset', required=True)
 parser.add_argument('--augmented', action='store_true')
 parser.add_argument('--crop', help='whether we should crop the image', action='store_true')
-parser.add_argument('--dataset', help='val/real_test', default='val')
+parser.add_argument('--dataset', help='val/real', choices=['val', 'real'], default='val')
 parser.add_argument('--no_uniformly_scaling', help='If specified, the cropped image may use a non uniformly scaling', action='store_true')
 parser.add_argument('--output', help='The output path', default='.')
 parser.add_argument('--debug', help='debug mode', action='store_true')
@@ -30,7 +30,10 @@ synset_names = ['BG', #0
                     'mug'#6
                     ]
 
-intrinsics = np.array([[577.5, 0, 319.5], [0., 577.5, 239.5], [0., 0., 1.]])
+if args.dataset == 'val':
+    intrinsics = np.array([[577.5, 0, 319.5], [0., 577.5, 239.5], [0., 0., 1.]])
+else:
+    intrinsics = np.array([[591.0125, 0, 322.525], [0, 590.16775, 244.11084], [0, 0, 1]])
 
 def debug_showimg(patches, title):
     amount = len(patches)
@@ -299,6 +302,12 @@ def process_CAMERA(path):
     # iterate each folder
     for scene in scene_list:
         folder_path = os.path.join(path, scene)
+        # try to parse scene id if it's real set
+        if args.dataset == 'real':
+            scene_id_str = scene[scene.rfind('_') + 1:]
+            scene_id = int(scene_id_str)
+        else:
+            scene_id = int(scene)
         # find all color pngs
         png_files = os.path.join(folder_path, "./*_color.png")    # ./ is for compatibility to Windows, although Windows is not recommended
         png_files = glob.glob(png_files)
@@ -327,7 +336,7 @@ def process_CAMERA(path):
                 if (args.crop):
                     output_list[cls_id]['bgr_y_src'].append(patches[i])
                 else:
-                    output_list[cls_id]['scene_id'].append(int(scene))
+                    output_list[cls_id]['scene_id'].append(scene_id)
                     output_list[cls_id]['image_id'].append(int(img_id))
                     output_list[cls_id]['class_id'].append(cls_id)
                     output_list[cls_id]['bbox'].append(bbox[i])
@@ -371,8 +380,9 @@ if __name__ == "__main__":
     if dataset_type == 'val':
         print ("Start process camera dataset")
         process_CAMERA(dataset_path)
-    elif dataset_type == 'real_test':
-        print ("Sorry, real set is not implemented yet")
+    elif dataset_type == 'real':
+        # print ("Sorry, real set is not implemented yet")
+        process_CAMERA(dataset_path)
         exit()
     else:
         print ("No available dataset type is input")

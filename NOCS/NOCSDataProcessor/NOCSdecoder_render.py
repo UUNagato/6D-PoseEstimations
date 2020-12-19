@@ -26,6 +26,7 @@ parser.add_argument('--remove_material', help='Remove object materials when rend
 parser.add_argument('--range', help='The range to process', default=None)
 parser.add_argument('--save_interval', help='Save a temporary file for every X samples', default='100000000')
 parser.add_argument('--refresh_rate', help='Refresh the scene, release memory every X samples', default='500')
+parser.add_argument('--dataset', help='val or real', choices=['val','real'], default='val')
 
 args, _ = parser.parse_known_args()
 
@@ -40,6 +41,7 @@ output_interval = int(args.debug_output_interval)
 debug = args.debug
 save_interval = int(args.save_interval)
 refresh_rate = int(args.refresh_rate)
+dataset_type = args.dataset
 
 cropped_size = (128,128)
 global_obj_scale = 1.0
@@ -206,7 +208,10 @@ def initialize_scene():
     cam = scene.objects['Camera']
     clip_start,clip_end=near_plane, far_plane
 
-    intrinsics = np.array([[577.5, 0, 319.5], [0., 577.5, 239.5], [0., 0., 1.]])
+    if dataset_type == 'val':
+        intrinsics = np.array([[577.5, 0, 319.5], [0., 577.5, 239.5], [0., 0., 1.]])
+    else:
+        intrinsics = np.array([[591.0125, 0, 322.525], [0, 590.16775, 244.11084], [0, 0, 1]])
     film_size = (640, 480)
     set_camera(intrinsics, film_size, scene,cam,clip_start,clip_end)
 
